@@ -8,7 +8,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
-import androidx.preference.PreferenceManager;
 import android.text.TextUtils;
 import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
@@ -28,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.app.NotificationCompat;
 import androidx.fragment.app.FragmentManager;
+import androidx.preference.PreferenceManager;
 
 import org.schabi.newpipe.download.DownloadDialog;
 import org.schabi.newpipe.extractor.Info;
@@ -45,8 +45,8 @@ import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.player.playqueue.PlaylistPlayQueue;
 import org.schabi.newpipe.player.playqueue.SinglePlayQueue;
 import org.schabi.newpipe.report.UserAction;
-import org.schabi.newpipe.util.DeviceUtils;
 import org.schabi.newpipe.util.Constants;
+import org.schabi.newpipe.util.DeviceUtils;
 import org.schabi.newpipe.util.ExtractorHelper;
 import org.schabi.newpipe.util.ListHelper;
 import org.schabi.newpipe.util.NavigationHelper;
@@ -59,8 +59,6 @@ import org.schabi.newpipe.views.FocusOverlayView;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
 
 import icepick.Icepick;
@@ -114,8 +112,6 @@ public class RouterActivity extends AppCompatActivity {
                 finish();
             }
         }
-
-        internalRoute = getIntent().getBooleanExtra(INTERNAL_ROUTE_KEY, false);
 
         setTheme(ThemeHelper.isLightThemeSelected(this)
                 ? R.style.RouterActivityThemeLight : R.style.RouterActivityThemeDark);
@@ -491,10 +487,6 @@ public class RouterActivity extends AppCompatActivity {
                     .subscribeOn(Schedulers.io())
                     .observeOn(AndroidSchedulers.mainThread())
                     .subscribe(intent -> {
-                        if (!internalRoute) {
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                        }
                         startActivity(intent);
 
                         finish();
@@ -514,7 +506,7 @@ public class RouterActivity extends AppCompatActivity {
 
     @SuppressLint("CheckResult")
     private void openDownloadDialog() {
-        ExtractorHelper.getStreamInfo(currentServiceId, currentUrl, true)
+        disposables.add(ExtractorHelper.getStreamInfo(currentServiceId, currentUrl, true)
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe((@NonNull StreamInfo result) -> {
@@ -531,10 +523,10 @@ public class RouterActivity extends AppCompatActivity {
                     downloadDialog.setSelectedVideoStream(selectedVideoStreamIndex);
                     downloadDialog.show(fm, "downloadDialog");
                     fm.executePendingTransactions();
-                    downloadDialog.getDialog().setOnDismissListener(dialog -> finish());
+                    downloadDialog.requireDialog().setOnDismissListener(dialog -> finish());
                 }, (@NonNull Throwable throwable) -> {
                     showUnsupportedUrlDialog(currentUrl);
-                });
+                }));
     }
 
     @Override
@@ -550,66 +542,6 @@ public class RouterActivity extends AppCompatActivity {
         if (requestCode == PermissionHelper.DOWNLOAD_DIALOG_REQUEST_CODE) {
             openDownloadDialog();
         }
-    }
-
-    /*//////////////////////////////////////////////////////////////////////////
-    // Service Fetcher
-    //////////////////////////////////////////////////////////////////////////*/
-
-    private String removeHeadingGibberish(final String input) {
-        int start = 0;
-        for (int i = input.indexOf("://") - 1; i >= 0; i--) {
-            if (!input.substring(i, i + 1).matches("\\p{L}")) {
-                start = i + 1;
-                break;
-            }
-        }
-        return input.substring(start);
-    }
-
-    /*//////////////////////////////////////////////////////////////////////////
-    // Utils
-    //////////////////////////////////////////////////////////////////////////*/
-
-    private String trim(final String input) {
-        if (input == null || input.length() < 1) {
-            return input;
-        } else {
-            String output = input;
-            while (output.length() > 0 && output.substring(0, 1).matches(REGEX_REMOVE_FROM_URL)) {
-                output = output.substring(1);
-            }
-            while (output.length() > 0
-                    && output.substring(output.length() - 1).matches(REGEX_REMOVE_FROM_URL)) {
-                output = output.substring(0, output.length() - 1);
-            }
-            return output;
-        }
-    }
-
-    /**
-     * Retrieves all Strings which look remotely like URLs from a text.
-     * Used if NewPipe was called through share menu.
-     *
-     * @param sharedText text to scan for URLs.
-     * @return potential URLs
-     */
-    protected String[] getUris(final String sharedText) {
-        final Collection<String> result = new HashSet<>();
-        if (sharedText != null) {
-            final String[] array = sharedText.split("\\p{Space}");
-            for (String s : array) {
-                s = trim(s);
-                if (s.length() != 0) {
-                    if (s.matches(".+://.+")) {
-                        result.add(removeHeadingGibberish(s));
-                    } else if (s.matches(".+\\..+")) {
-                        result.add("http://" + s);
-                    }
-                }
-            }
-        }
-        return result.toArray(new String[0]);
     }
 
     private static class AdapterChoiceItem {
@@ -738,11 +670,11 @@ public class RouterActivity extends AppCompatActivity {
                         playQueue = new SinglePlayQueue((StreamInfo) info);
 
                         if (playerChoice.equals(videoPlayerKey)) {
-                            openMainPlayer(playQueue, choice);
+                            NavigationHelper.playOnMainPlayer(this, playQueue);
                         } else if (playerChoice.equals(backgroundPlayerKey)) {
-                            NavigationHelper.enqueueOnBackgroundPlayer(this, playQueue, true);
+                            NavigationHelper.playOnBackgroundPlayer(this, playQueue, true);
                         } else if (playerChoice.equals(popupPlayerKey)) {
-                            NavigationHelper.enqueueOnPopupPlayer(this, playQueue, true);
+                            NavigationHelper.playOnPopupPlayer(this, playQueue, true);
                         }
                     }
                 }
@@ -753,7 +685,7 @@ public class RouterActivity extends AppCompatActivity {
                             : new PlaylistPlayQueue((PlaylistInfo) info);
 
                     if (playerChoice.equals(videoPlayerKey)) {
-                        openMainPlayer(playQueue, choice);
+                        NavigationHelper.playOnMainPlayer(this, playQueue);
                     } else if (playerChoice.equals(backgroundPlayerKey)) {
                         NavigationHelper.playOnBackgroundPlayer(this, playQueue, true);
                     } else if (playerChoice.equals(popupPlayerKey)) {
@@ -761,11 +693,6 @@ public class RouterActivity extends AppCompatActivity {
                     }
                 }
             };
-        }
-
-        private void openMainPlayer(final PlayQueue playQueue, final Choice choice) {
-            NavigationHelper.playOnMainPlayer(this, playQueue, choice.linkType,
-                    choice.url, "", true, true);
         }
 
         @Override

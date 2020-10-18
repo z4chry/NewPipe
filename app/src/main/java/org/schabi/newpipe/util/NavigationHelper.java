@@ -18,7 +18,6 @@ import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
-import androidx.preference.PreferenceManager;
 
 import com.nostra13.universalimageloader.core.ImageLoader;
 
@@ -52,14 +51,19 @@ import org.schabi.newpipe.player.BackgroundPlayerActivity;
 import org.schabi.newpipe.player.BasePlayer;
 import org.schabi.newpipe.player.MainPlayer;
 import org.schabi.newpipe.player.VideoPlayer;
+import org.schabi.newpipe.player.helper.PlayerHelper;
+import org.schabi.newpipe.player.helper.PlayerHolder;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import org.schabi.newpipe.settings.SettingsActivity;
 
 import java.util.ArrayList;
 
+import static org.schabi.newpipe.MainActivity.DEBUG;
+
 @SuppressWarnings({"unused"})
 public final class NavigationHelper {
+    public static final String TAG = NavigationHelper.class.getSimpleName();
     public static final String MAIN_FRAGMENT_TAG = "main_fragment_tag";
     public static final String SEARCH_FRAGMENT_TAG = "search_fragment_tag";
 
@@ -130,42 +134,22 @@ public final class NavigationHelper {
     }
 
     public static void playOnMainPlayer(final AppCompatActivity activity,
-                                        final PlayQueue queue,
-                                        final boolean autoPlay) {
-        playOnMainPlayer(activity.getSupportFragmentManager(), queue, autoPlay);
+                                        @NonNull final PlayQueue playQueue) {
+        final PlayQueueItem item = playQueue.getItem();
+        assert item != null;
+        openVideoDetailFragment(activity, activity.getSupportFragmentManager(),
+                item.getServiceId(), item.getUrl(), item.getTitle(), playQueue, false);
     }
 
-    public static void playOnMainPlayer(final FragmentManager fragmentManager,
-                                        final PlayQueue queue,
-                                        final boolean autoPlay) {
-        final PlayQueueItem currentStream = queue.getItem();
-        openVideoDetailFragment(
-                fragmentManager,
-                currentStream.getServiceId(),
-                currentStream.getUrl(),
-                currentStream.getTitle(),
-                autoPlay,
-                queue);
+    public static void playOnMainPlayer(final Context context,
+                                        @NonNull final PlayQueue playQueue) {
+        final PlayQueueItem item = playQueue.getItem();
+        assert item != null;
+        openVideoDetail(context, item.getServiceId(), item.getUrl(), item.getTitle(), playQueue);
     }
 
-    public static void playOnMainPlayer(@NonNull final Context context,
-                                        @Nullable final PlayQueue queue,
-                                        @NonNull final StreamingService.LinkType linkType,
-                                        @NonNull final String url,
-                                        @NonNull final String title,
-                                        final boolean autoPlay,
-                                        final boolean resumePlayback) {
-
-        final Intent intent = getPlayerIntent(context, MainActivity.class, queue, resumePlayback);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        intent.putExtra(Constants.KEY_LINK_TYPE, linkType);
-        intent.putExtra(Constants.KEY_URL, url);
-        intent.putExtra(Constants.KEY_TITLE, title);
-        intent.putExtra(VideoDetailFragment.AUTO_PLAY, autoPlay);
-        context.startActivity(intent);
-    }
-
-    public static void playOnPopupPlayer(final Context context, final PlayQueue queue,
+    public static void playOnPopupPlayer(final Context context,
+                                         final PlayQueue queue,
                                          final boolean resumePlayback) {
         if (!PermissionHelper.isPopupEnabled(context)) {
             PermissionHelper.showPopupEnablementToast(context);
@@ -300,9 +284,6 @@ public final class NavigationHelper {
                         .setNegativeButton(R.string.cancel, (dialog, which)
                                 -> Log.i("NavigationHelper", "You unlocked a secret unicorn."))
                         .show();
-//                Log.e("NavigationHelper",
-//                        "Either no Streaming player for audio was installed, "
-//                                + "or something important crashed:");
             } else {
                 Toast.makeText(context, R.string.no_player_found_toast, Toast.LENGTH_LONG).show();
             }
@@ -340,7 +321,7 @@ public final class NavigationHelper {
     }
 
     public static boolean tryGotoSearchFragment(final FragmentManager fragmentManager) {
-        if (MainActivity.DEBUG) {
+        if (DEBUG) {
             for (int i = 0; i < fragmentManager.getBackStackEntryCount(); i++) {
                 Log.d("NavigationHelper", "tryGoToSearchFragment() [" + i + "]"
                         + " = [" + fragmentManager.getBackStackEntryAt(i) + "]");
@@ -355,41 +336,6 @@ public final class NavigationHelper {
         defaultTransaction(fragmentManager)
                 .replace(R.id.fragment_holder, SearchFragment.getInstance(serviceId, searchString))
                 .addToBackStack(SEARCH_FRAGMENT_TAG)
-                .commit();
-    }
-
-    public static void openVideoDetailFragment(final FragmentManager fragmentManager,
-                                               final int serviceId, final String url,
-                                               final String title) {
-        openVideoDetailFragment(fragmentManager, serviceId, url, title, true, null);
-    }
-
-    public static void openVideoDetailFragment(
-            final FragmentManager fragmentManager,
-            final int serviceId,
-            final String url,
-            final String title,
-            final boolean autoPlay,
-            final PlayQueue playQueue) {
-        final Fragment fragment = fragmentManager.findFragmentById(R.id.fragment_player_holder);
-
-        if (fragment instanceof VideoDetailFragment && fragment.isVisible()) {
-            expandMainPlayer(fragment.requireActivity());
-            final VideoDetailFragment detailFragment = (VideoDetailFragment) fragment;
-            detailFragment.setAutoplay(autoPlay);
-            detailFragment
-                    .selectAndLoadVideo(serviceId, url, title == null ? "" : title, playQueue);
-            detailFragment.scrollToTop();
-            return;
-        }
-
-        final VideoDetailFragment instance = VideoDetailFragment
-                .getInstance(serviceId, url, title == null ? "" : title, playQueue);
-        instance.setAutoplay(autoPlay);
-
-        defaultTransaction(fragmentManager)
-                .replace(R.id.fragment_player_holder, instance)
-                .runOnCommit(() -> expandMainPlayer(instance.requireActivity()))
                 .commit();
     }
 
@@ -409,33 +355,86 @@ public final class NavigationHelper {
                 .commit();
     }
 
+    private interface RunnableWithVideoDetailFragment {
+        void run(VideoDetailFragment detailFragment);
+    }
+
+    public static void openVideoDetailFragment(@NonNull final Context context,
+                                               @NonNull final FragmentManager fragmentManager,
+                                               final int serviceId,
+                                               @Nullable final String url,
+                                               @NonNull final String title,
+                                               @Nullable final PlayQueue playQueue,
+                                               final boolean switchingPlayers) {
+
+        final boolean autoPlay;
+        @Nullable final MainPlayer.PlayerType playerType = PlayerHolder.getType();
+        if (playerType == null) {
+            // no player open
+            autoPlay = PlayerHelper.isAutoplayAllowedByUser(context);
+        } else if (switchingPlayers) {
+            // switching player to main player
+            autoPlay = true;
+        } else if (playerType == MainPlayer.PlayerType.VIDEO) {
+            // opening new stream while already playing in main player
+            autoPlay = PlayerHelper.isAutoplayAllowedByUser(context);
+        } else {
+            // opening new stream while already playing in another player
+            autoPlay = false;
+        }
+
+        final RunnableWithVideoDetailFragment onVideoDetailFragmentReady = (detailFragment) -> {
+            expandMainPlayer(detailFragment.requireActivity());
+            detailFragment.setAutoPlay(autoPlay);
+            if (switchingPlayers) {
+                // Situation when user switches from players to main player. All needed data is
+                // here, we can start watching (assuming newQueue equals playQueue).
+                detailFragment.openVideoPlayer();
+            } else {
+                detailFragment.selectAndLoadVideo(serviceId, url, title, playQueue);
+            }
+            detailFragment.scrollToTop();
+        };
+
+        final Fragment fragment = fragmentManager.findFragmentById(R.id.fragment_player_holder);
+        if (fragment instanceof VideoDetailFragment && fragment.isVisible()) {
+            onVideoDetailFragmentReady.run((VideoDetailFragment) fragment);
+        } else {
+            final VideoDetailFragment instance = VideoDetailFragment
+                    .getInstance(serviceId, url, title, playQueue);
+            instance.setAutoPlay(autoPlay);
+
+            defaultTransaction(fragmentManager)
+                    .replace(R.id.fragment_player_holder, instance)
+                    .runOnCommit(() -> onVideoDetailFragmentReady.run(instance))
+                    .commit();
+        }
+    }
+
     public static void openChannelFragment(final FragmentManager fragmentManager,
                                            final int serviceId, final String url,
-                                           final String name) {
+                                           @NonNull final String name) {
         defaultTransaction(fragmentManager)
-                .replace(R.id.fragment_holder, ChannelFragment.getInstance(serviceId, url,
-                        name == null ? "" : name))
+                .replace(R.id.fragment_holder, ChannelFragment.getInstance(serviceId, url, name))
                 .addToBackStack(null)
                 .commit();
     }
 
     public static void openCommentsFragment(final FragmentManager fragmentManager,
                                             final int serviceId, final String url,
-                                            final String name) {
+                                            @NonNull final String name) {
         fragmentManager.beginTransaction()
                 .setCustomAnimations(R.anim.switch_service_in, R.anim.switch_service_out)
-                .replace(R.id.fragment_holder, CommentsFragment.getInstance(serviceId, url,
-                        name == null ? "" : name))
+                .replace(R.id.fragment_holder, CommentsFragment.getInstance(serviceId, url, name))
                 .addToBackStack(null)
                 .commit();
     }
 
     public static void openPlaylistFragment(final FragmentManager fragmentManager,
                                             final int serviceId, final String url,
-                                            final String name) {
+                                            @NonNull final String name) {
         defaultTransaction(fragmentManager)
-                .replace(R.id.fragment_holder, PlaylistFragment.getInstance(serviceId, url,
-                        name == null ? "" : name))
+                .replace(R.id.fragment_holder, PlaylistFragment.getInstance(serviceId, url, name))
                 .addToBackStack(null)
                 .commit();
     }
@@ -511,33 +510,31 @@ public final class NavigationHelper {
         context.startActivity(mIntent);
     }
 
-    public static void openChannel(final Context context, final int serviceId, final String url) {
-        openChannel(context, serviceId, url, null);
-    }
-
     public static void openChannel(final Context context, final int serviceId,
-                                   final String url, final String name) {
+                                   final String url, @NonNull final String name) {
         final Intent openIntent = getOpenIntent(context, url, serviceId,
                 StreamingService.LinkType.CHANNEL);
-        if (name != null && !name.isEmpty()) {
-            openIntent.putExtra(Constants.KEY_TITLE, name);
-        }
+        openIntent.putExtra(Constants.KEY_TITLE, name);
         context.startActivity(openIntent);
     }
 
-    public static void openVideoDetail(final Context context, final int serviceId,
-                                       final String url) {
-        openVideoDetail(context, serviceId, url, null);
-    }
+    public static void openVideoDetail(final Context context,
+                                       final int serviceId,
+                                       final String url,
+                                       @NonNull final String title,
+                                       @Nullable final PlayQueue playQueue) {
 
-    public static void openVideoDetail(final Context context, final int serviceId,
-                                       final String url, final String title) {
-        final Intent openIntent = getOpenIntent(context, url, serviceId,
+        final Intent intent = getOpenIntent(context, url, serviceId,
                 StreamingService.LinkType.STREAM);
-        if (title != null && !title.isEmpty()) {
-            openIntent.putExtra(Constants.KEY_TITLE, title);
+        intent.putExtra(Constants.KEY_TITLE, title);
+
+        if (playQueue != null) {
+            final String cacheKey = SerializedCache.getInstance().put(playQueue, PlayQueue.class);
+            if (cacheKey != null) {
+                intent.putExtra(VideoPlayer.PLAY_QUEUE_KEY, cacheKey);
+            }
         }
-        context.startActivity(openIntent);
+        context.startActivity(intent);
     }
 
     public static void openMainActivity(final Context context) {
@@ -550,7 +547,6 @@ public final class NavigationHelper {
     public static void openRouterActivity(final Context context, final String url) {
         final Intent mIntent = new Intent(context, RouterActivity.class);
         mIntent.setData(Uri.parse(url));
-        mIntent.putExtra(RouterActivity.INTERNAL_ROUTE_KEY, true);
         context.startActivity(mIntent);
     }
 
@@ -564,14 +560,12 @@ public final class NavigationHelper {
         context.startActivity(intent);
     }
 
-    public static boolean openDownloads(final Activity activity) {
-        if (!PermissionHelper.checkStoragePermissions(
+    public static void openDownloads(final Activity activity) {
+        if (PermissionHelper.checkStoragePermissions(
                 activity, PermissionHelper.DOWNLOADS_REQUEST_CODE)) {
-            return false;
+            final Intent intent = new Intent(activity, DownloadActivity.class);
+            activity.startActivity(intent);
         }
-        final Intent intent = new Intent(activity, DownloadActivity.class);
-        activity.startActivity(intent);
-        return true;
     }
 
     public static Intent getPlayQueueActivityIntent(final Context context) {
@@ -600,7 +594,8 @@ public final class NavigationHelper {
         return getIntentByLink(context, NewPipe.getServiceByUrl(url), url);
     }
 
-    public static Intent getIntentByLink(final Context context, final StreamingService service,
+    public static Intent getIntentByLink(final Context context,
+                                         final StreamingService service,
                                          final String url) throws ExtractionException {
         final StreamingService.LinkType linkType = service.getLinkTypeByUrl(url);
 
@@ -609,15 +604,7 @@ public final class NavigationHelper {
                     + " url=" + url);
         }
 
-        final Intent rIntent = getOpenIntent(context, url, service.getServiceId(), linkType);
-
-        if (linkType == StreamingService.LinkType.STREAM) {
-            rIntent.putExtra(VideoDetailFragment.AUTO_PLAY,
-                    PreferenceManager.getDefaultSharedPreferences(context).getBoolean(
-                            context.getString(R.string.autoplay_through_intent_key), false));
-        }
-
-        return rIntent;
+        return getOpenIntent(context, url, service.getServiceId(), linkType);
     }
 
     private static Uri openMarketUrl(final String packageName) {
