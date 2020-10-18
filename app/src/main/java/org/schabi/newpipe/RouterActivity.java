@@ -39,7 +39,9 @@ import org.schabi.newpipe.extractor.exceptions.ExtractionException;
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
 import org.schabi.newpipe.extractor.stream.VideoStream;
+import org.schabi.newpipe.player.MainPlayer;
 import org.schabi.newpipe.player.helper.PlayerHelper;
+import org.schabi.newpipe.player.helper.PlayerHolder;
 import org.schabi.newpipe.player.playqueue.ChannelPlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.player.playqueue.PlaylistPlayQueue;
@@ -393,14 +395,22 @@ public class RouterActivity extends AppCompatActivity {
                 // show both "show info" and "video player", they are two different activities
                 returnList.add(showInfo);
                 returnList.add(videoPlayer);
-            } else if (capabilities.contains(VIDEO)
-                    && PlayerHelper.isAutoplayAllowedByUser(context)) {
-                // show only "video player" since the details activity will be opened and the video
-                // will be autoplayed there and "show info" would do the exact same thing
-                returnList.add(videoPlayer);
             } else {
-                // show only "show info" if video player is not applicable or autoplay is disabled
-                returnList.add(showInfo);
+                final MainPlayer.PlayerType playerType = PlayerHolder.getType();
+                if (capabilities.contains(VIDEO)
+                        && PlayerHelper.isAutoplayAllowedByUser(context)
+                        && playerType == null || playerType == MainPlayer.PlayerType.VIDEO) {
+                    // show only "video player" since the details activity will be opened and the
+                    // video will be auto played there. Since "show info" would do the exact same
+                    // thing, use that as a key to let VideoDetailFragment load the stream instead
+                    // of using FetcherService (see comment in handleChoice())
+                    returnList.add(new AdapterChoiceItem(
+                            showInfo.key, videoPlayer.description, videoPlayer.icon));
+                } else {
+                    // show only "show info" if video player is not applicable, auto play is
+                    // disabled or a video is playing in a player different than the main one
+                    returnList.add(showInfo);
+                }
             }
 
             if (capabilities.contains(VIDEO)) {
